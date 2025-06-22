@@ -109,8 +109,8 @@ export default function ZonasPage() {
     return () => window.removeEventListener('resize', updateHeight);
   }, []);
 
-  // Calcula altura do mapa baseado na altura da tela
-  const mapHeight = windowHeight > 0 ? Math.max(windowHeight - 350, 300) : 400;
+  // Calcula altura do mapa para 80% da altura da tela
+  const mapHeight = windowHeight > 0 ? Math.max(windowHeight * 0.8, 300) : 400;
 
   useEffect(() => {
     if (telefone) {
@@ -825,7 +825,7 @@ export default function ZonasPage() {
   }, [telefone, startPolling]);
 
   return (
-    <Box p={[2, 4]} bg={bgColor} minH="100vh">
+    <Box bg={bgColor} minH="100vh" p={[2, 4]}>
       <Container maxW="container.xl">
         <VStack spacing={[3, 6]} align="stretch">
           {/* Cabeçalho com logomarca e instruções */}
@@ -1024,6 +1024,7 @@ export default function ZonasPage() {
             </VStack>
           </Box>
 
+          {/* Mapa ocupando 80% da altura da tela */}
           <Box
             bg={cardBg}
             borderRadius="lg"
