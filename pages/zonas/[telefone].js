@@ -91,6 +91,26 @@ export default function ZonasPage() {
   const lastPointsHashRef = useRef('');
   const { isOpen, onOpen, onClose } = useDisclosure();
   const cancelRef = useRef();
+  const [windowHeight, setWindowHeight] = useState(0);
+
+  // Hook para detectar altura da janela
+  useEffect(() => {
+    const updateHeight = () => {
+      setWindowHeight(window.innerHeight);
+    };
+
+    // Define altura inicial
+    updateHeight();
+
+    // Adiciona listener para mudanças de tamanho
+    window.addEventListener('resize', updateHeight);
+
+    // Remove listener ao desmontar
+    return () => window.removeEventListener('resize', updateHeight);
+  }, []);
+
+  // Calcula altura do mapa baseado na altura da tela
+  const mapHeight = windowHeight > 0 ? Math.max(windowHeight - 350, 300) : 400;
 
   useEffect(() => {
     if (telefone) {
@@ -1010,7 +1030,7 @@ export default function ZonasPage() {
             borderWidth="1px"
             borderColor={borderColor}
             shadow="sm"
-            h={["400px", "600px"]}
+            h={`${mapHeight}px`}
             position="relative"
             overflow="hidden"
           >
