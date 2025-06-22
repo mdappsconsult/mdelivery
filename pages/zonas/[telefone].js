@@ -24,8 +24,18 @@ import {
   AlertDialogHeader,
   AlertDialogContent,
   AlertDialogOverlay,
-  useDisclosure
+  useDisclosure,
+  Grid
 } from '@chakra-ui/react';
+import { 
+  MdDraw, 
+  MdStop, 
+  MdDelete, 
+  MdSave, 
+  MdCancel, 
+  MdEdit,
+  MdClear
+} from 'react-icons/md';
 import { supabase } from '../../lib/supabase';
 
 const GOOGLE_MAPS_KEY = 'AIzaSyD1DL2b2Gy91nOOxiQn5CqlX0fciTER4E0';
@@ -795,13 +805,13 @@ export default function ZonasPage() {
   }, [telefone, startPolling]);
 
   return (
-    <Box p={4} bg={bgColor} minH="100vh">
+    <Box p={[2, 4]} bg={bgColor} minH="100vh">
       <Container maxW="container.xl">
-        <VStack spacing={6} align="stretch">
+        <VStack spacing={[3, 6]} align="stretch">
           {/* Cabeçalho com logomarca e instruções */}
           <Box
             bg={cardBg}
-            p={6}
+            p={[4, 6]}
             borderRadius="xl"
             borderWidth="1px"
             borderColor={borderColor}
@@ -811,10 +821,10 @@ export default function ZonasPage() {
               bgGradient: "linear(to-r, blue.900, purple.900)"
             }}
           >
-            <VStack spacing={4} align="center">
+            <VStack spacing={[2, 4]} align="center">
               {/* Logomarca MDelivery */}
               <Heading
-                size="3xl"
+                size={["xl", "3xl"]}
                 fontWeight="extrabold"
                 fontFamily="Inter, system-ui, sans-serif"
                 bgGradient="linear(to-r, orange.400, red.500, pink.600)"
@@ -828,7 +838,7 @@ export default function ZonasPage() {
               
               {/* Subtítulo */}
               <Text
-                fontSize="lg"
+                fontSize={["md", "lg"]}
                 color={subtitleColor}
                 fontWeight="medium"
                 textAlign="center"
@@ -840,7 +850,7 @@ export default function ZonasPage() {
               {/* Instruções de uso */}
               <Box
                 bg={bgColor}
-                p={3}
+                p={[2, 3]}
                 borderRadius="lg"
                 borderWidth="1px"
                 borderColor={borderColor}
@@ -848,7 +858,7 @@ export default function ZonasPage() {
                 maxW="500px"
               >
                 <Text
-                  fontSize="sm"
+                  fontSize={["xs", "sm"]}
                   color={textColor}
                   textAlign="center"
                   lineHeight="1.5"
@@ -864,99 +874,131 @@ export default function ZonasPage() {
           {/* Controles de zona */}
           <Box
             bg={cardBg}
-            p={6}
+            p={[4, 6]}
             borderRadius="lg"
             borderWidth="1px"
             borderColor={borderColor}
             shadow="sm"
           >
-            <VStack spacing={4} align="stretch">
+            <VStack spacing={[3, 4]} align="stretch">
               {!editingZona && (
-                <VStack spacing={4} align="stretch">
+                <VStack spacing={[3, 4]} align="stretch">
                   <Input
                     placeholder="Nome da zona (obrigatório)"
                     value={currentZona.nome}
                     onChange={(e) => setCurrentZona(prev => ({ ...prev, nome: e.target.value }))}
                     bg={inputBg}
                     isDisabled={editingZona !== null}
+                    size={["md", "md"]}
                   />
-                  <HStack spacing={2}>
-                    {!isDrawing ? (
-                      <Button
-                        colorScheme="green"
-                        onClick={() => setIsDrawing(true)}
-                        leftIcon={<span>✏️</span>}
-                        w={["100%", "auto"]}
-                      >
-                        Desenhar Zona
-                      </Button>
-                    ) : (
-                      <>
+                  
+                  {!isDrawing ? (
+                    <Button
+                      colorScheme="green"
+                      onClick={() => setIsDrawing(true)}
+                      size="lg"
+                      w="100%"
+                      h={["12", "10"]}
+                      leftIcon={<MdDraw />}
+                      fontSize={["md", "md"]}
+                      fontWeight="bold"
+                    >
+                      Desenhar Zona
+                    </Button>
+                  ) : (
+                    <VStack spacing={3} align="stretch">
+                      <Grid templateColumns={["1fr 1fr", "1fr 1fr"]} gap={3}>
                         <Button
                           colorScheme="red"
                           onClick={() => setIsDrawing(false)}
-                          leftIcon={<span>⏹️</span>}
-                          w={["100%", "auto"]}
+                          size="lg"
+                          h={["12", "10"]}
+                          leftIcon={<MdStop />}
+                          fontSize={["sm", "md"]}
                         >
-                          Parar Desenho
+                          Parar
                         </Button>
                         <Button
                           colorScheme="orange"
                           onClick={limparDesenho}
-                          leftIcon={<span>🗑️</span>}
-                          w={["100%", "auto"]}
+                          size="lg"
+                          h={["12", "10"]}
+                          leftIcon={<MdClear />}
+                          fontSize={["sm", "md"]}
                           isDisabled={currentZona.pontos.length === 0}
                         >
-                          Limpar Desenho
+                          Limpar
                         </Button>
-                      </>
-                    )}
-                    {currentZona.pontos.length >= 3 && !editingZona && (
-                      <Button
-                        colorScheme="blue"
-                        onClick={salvarZona}
-                        leftIcon={<span>💾</span>}
-                        w={["100%", "auto"]}
-                        isDisabled={!currentZona.nome || currentZona.nome.trim() === ''}
-                      >
-                        Salvar Zona
-                      </Button>
-                    )}
-                  </HStack>
+                      </Grid>
+                      
+                      {currentZona.pontos.length >= 3 && (
+                        <Button
+                          colorScheme="blue"
+                          onClick={salvarZona}
+                          size="lg"
+                          w="100%"
+                          h={["12", "10"]}
+                          leftIcon={<MdSave />}
+                          fontSize={["md", "md"]}
+                          fontWeight="bold"
+                          isDisabled={!currentZona.nome || currentZona.nome.trim() === ''}
+                        >
+                          Salvar Zona
+                        </Button>
+                      )}
+                    </VStack>
+                  )}
                 </VStack>
               )}
 
               {editingZona && (
-                <VStack spacing={4} align="stretch" mb={4}>
+                <VStack spacing={[4, 4]} align="stretch">
                   <Input
                     placeholder="Nome da zona (obrigatório)"
                     value={editingZona.nome || ''}
                     onChange={handleNomeChange}
                     bg={inputBg}
+                    size={["md", "md"]}
                   />
-                  <HStack spacing={2} justify="flex-end">
+                  
+                  <VStack spacing={3} align="stretch">
                     <Button
                       colorScheme="blue"
                       onClick={salvarEdicao}
                       isDisabled={!hasChanges || !editingZona.nome || editingZona.nome.trim() === ''}
-                      leftIcon={<span>💾</span>}
+                      size="lg"
+                      w="100%"
+                      h={["12", "10"]}
+                      leftIcon={<MdSave />}
+                      fontSize={["md", "md"]}
+                      fontWeight="bold"
                     >
                       Salvar Alterações
                     </Button>
-                    <Button
-                      onClick={cancelarEdicao}
-                      leftIcon={<span>❌</span>}
-                    >
-                      Cancelar
-                    </Button>
-                    <Button
-                      colorScheme="red"
-                      onClick={onOpen}
-                      leftIcon={<span>🗑️</span>}
-                    >
-                      Excluir
-                    </Button>
-                  </HStack>
+                    
+                    <Grid templateColumns={["1fr 1fr", "1fr 1fr"]} gap={3}>
+                      <Button
+                        onClick={cancelarEdicao}
+                        size="lg"
+                        h={["12", "10"]}
+                        leftIcon={<MdCancel />}
+                        fontSize={["sm", "md"]}
+                        variant="outline"
+                      >
+                        Cancelar
+                      </Button>
+                      <Button
+                        colorScheme="red"
+                        onClick={onOpen}
+                        size="lg"
+                        h={["12", "10"]}
+                        leftIcon={<MdDelete />}
+                        fontSize={["sm", "md"]}
+                      >
+                        Excluir
+                      </Button>
+                    </Grid>
+                  </VStack>
                 </VStack>
               )}
             </VStack>
@@ -968,7 +1010,7 @@ export default function ZonasPage() {
             borderWidth="1px"
             borderColor={borderColor}
             shadow="sm"
-            h="600px"
+            h={["400px", "600px"]}
             position="relative"
             overflow="hidden"
           >
