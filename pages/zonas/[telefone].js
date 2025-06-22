@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/router';
 import { GoogleMap, LoadScript, Polygon, Marker } from '@react-google-maps/api';
 import { 
@@ -17,7 +17,14 @@ import {
   useColorMode,
   useColorModeValue,
   Stack,
-  useBreakpointValue
+  useBreakpointValue,
+  AlertDialog,
+  AlertDialogBody,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogContent,
+  AlertDialogOverlay,
+  useDisclosure
 } from '@chakra-ui/react';
 import { supabase } from '../../lib/supabase';
 
@@ -31,8 +38,8 @@ const BRASIL_BOUNDS = {
   east: -34.79299   // Ponto mais a leste
 };
 
-const defaultCenter = { lat: -15.7801, lng: -47.9292 }; // Brasília - Centro do Brasil
-const defaultZoom = 4; // Zoom para mostrar o Brasil inteiro
+const defaultCenter = { lat: -15.7801, lng: -47.9292 }; // Brasília
+const defaultZoom = 4;
 
 const colors = [
   '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF',
@@ -61,55 +68,186 @@ export default function ZonasPage() {
   const [editingZona, setEditingZona] = useState(null);
   const [selectedVertex, setSelectedVertex] = useState(null);
   const [mapInstance, setMapInstance] = useState(null);
-  const [mapConfig, setMapConfig] = useState({
-    center: defaultCenter,
-    zoom: defaultZoom,
-    bounds: null
-  });
+  const [mapCenter, setMapCenter] = useState(defaultCenter);
+  const [mapZoom, setMapZoom] = useState(defaultZoom);
+  const [hasChanges, setHasChanges] = useState(false);
+  const [longPressTimer, setLongPressTimer] = useState(null);
+  const [isLongPress, setIsLongPress] = useState(false);
+  const [polygonListeners, setPolygonListeners] = useState({});
+  const [saveTimeout, setSaveTimeout] = useState(null);
+  const activePolygonRef = useRef(null);
+  const lastSaveTimeRef = useRef(0);
+  const pollingIntervalRef = useRef(null);
+  const lastPointsHashRef = useRef('');
+  const { isOpen, onOpen, onClose } = useDisclosure();
+  const cancelRef = useRef();
 
   useEffect(() => {
     if (telefone) {
+      console.log('Telefone carregado:', telefone);
       carregarZonas();
+    } else {
+      console.log('Telefone ainda não disponível');
     }
   }, [telefone]);
 
-  // Novo useEffect para ajustar o mapa quando as zonas forem carregadas
   useEffect(() => {
-    if (mapInstance && zonas.length > 0) {
+    // Só ajusta zoom se não estiver editando uma zona
+    if (mapInstance && zonas.length > 0 && !editingZona) {
       const bounds = new google.maps.LatLngBounds();
       zonas.forEach(zona => {
         zona.pontos.forEach(point => {
           bounds.extend(new google.maps.LatLng(point.lat, point.lng));
         });
       });
-
-      // Expande os limites em 20% para melhor visualização
-      const ne = bounds.getNorthEast();
-      const sw = bounds.getSouthWest();
-      const latSpan = ne.lat() - sw.lat();
-      const lngSpan = ne.lng() - sw.lng();
-      
-      bounds.extend(new google.maps.LatLng(
-        sw.lat() - latSpan * 0.1,
-        sw.lng() - lngSpan * 0.1
-      ));
-      bounds.extend(new google.maps.LatLng(
-        ne.lat() + latSpan * 0.1,
-        ne.lng() + lngSpan * 0.1
-      ));
-
-      // Ajusta o mapa para os limites calculados
       mapInstance.fitBounds(bounds);
-      
-      // Limita o zoom máximo para não aproximar demais
-      const listener = mapInstance.addListener('idle', () => {
+
+      setTimeout(() => {
         if (mapInstance.getZoom() > 15) {
           mapInstance.setZoom(15);
         }
-        google.maps.event.removeListener(listener);
+      }, 100);
+    }
+  }, [zonas, mapInstance, editingZona]);
+
+  const getPointsHash = (points) => {
+    return JSON.stringify(points.map(p => ({ lat: Math.round(p.lat * 1000000), lng: Math.round(p.lng * 1000000) })));
+  };
+
+  const savePolygonPoints = useCallback(async (polygon, zonaId) => {
+    if (!telefone || !polygon) return;
+
+    try {
+      const path = polygon.getPath();
+      const newPoints = [];
+      
+      for (let i = 0; i < path.getLength(); i++) {
+        const point = path.getAt(i);
+        newPoints.push({
+          lat: point.lat(),
+          lng: point.lng()
+        });
+      }
+
+      const pointsHash = getPointsHash(newPoints);
+      
+      // Verifica se os pontos realmente mudaram
+      if (pointsHash === lastPointsHashRef.current) {
+        console.log('⏭️ Pontos não mudaram, pulando salvamento');
+        return;
+      }
+
+      lastPointsHashRef.current = pointsHash;
+
+      console.log('💾 Salvando alteração - Zona:', zonaId, 'Pontos:', newPoints.length);
+
+      // Atualiza o estado local
+      setEditingZona(prev => prev?.id === zonaId ? ({
+        ...prev,
+        pontos: newPoints
+      }) : prev);
+
+      setZonas(prevZonas => 
+        prevZonas.map(z => 
+          z.id === zonaId 
+            ? { ...z, pontos: newPoints }
+            : z
+        )
+      );
+
+      setHasChanges(true);
+
+      // Salva no Supabase
+      const { error } = await supabase
+        .from('zonas_entrega')
+        .update({
+          pontos: JSON.stringify(newPoints),
+          telefone: telefone
+        })
+        .eq('id', zonaId);
+
+      if (error) throw error;
+      
+      console.log('✅ Pontos salvos com sucesso:', newPoints.length, 'pontos para zona', zonaId);
+
+    } catch (error) {
+      console.error('❌ Erro ao salvar pontos:', error);
+      toast({
+        title: "Erro ao salvar",
+        description: "Não foi possível salvar as alterações",
+        status: "error",
+        duration: 3000,
+        isClosable: true,
       });
     }
-  }, [mapInstance, zonas]);
+  }, [telefone, toast]);
+
+  const stopPolling = useCallback(() => {
+    if (pollingIntervalRef.current) {
+      console.log('⏹️ Parando polling');
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+  }, []);
+
+  const startPolling = useCallback((polygon, zonaId) => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+    }
+
+    console.log('🔄 Iniciando polling para zona:', zonaId);
+
+    pollingIntervalRef.current = setInterval(() => {
+      if (polygon && polygon.getPath) {
+        try {
+          savePolygonPoints(polygon, zonaId);
+        } catch (error) {
+          console.error('Erro no polling:', error);
+        }
+      }
+    }, 500); // Verifica a cada 500ms
+  }, [savePolygonPoints]);
+
+  // Limpa polling quando o componente é desmontado
+  useEffect(() => {
+    return () => {
+      stopPolling();
+      // Limpa todos os listeners ao desmontar o componente
+      Object.values(polygonListeners).forEach(listeners => {
+        listeners.forEach(listener => {
+          google.maps.event.removeListener(listener);
+        });
+      });
+      
+      // Limpa timeout de salvamento se existir
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+      }
+    };
+  }, [stopPolling]);
+
+  // Limpa listeners da zona anterior quando muda de zona de edição
+  useEffect(() => {
+    if (!editingZona) {
+      stopPolling();
+      // Remove todos os listeners quando sai do modo de edição
+      Object.values(polygonListeners).forEach(listeners => {
+        listeners.forEach(listener => {
+          google.maps.event.removeListener(listener);
+        });
+      });
+      setPolygonListeners({});
+      
+      // Limpa timeout de salvamento se existir
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+        setSaveTimeout(null);
+      }
+      
+      activePolygonRef.current = null;
+      lastPointsHashRef.current = '';
+    }
+  }, [editingZona, stopPolling]);
 
   const carregarZonas = async () => {
     try {
@@ -127,13 +265,22 @@ export default function ZonasPage() {
         }));
         
         setZonas(zonasFormatadas);
-        
-        // Se não existem zonas, configura o mapa para mostrar o Brasil inteiro
-        if (zonasFormatadas.length === 0) {
-          setMapConfig({
-            center: defaultCenter,
-            zoom: defaultZoom
+
+        if (zonasFormatadas.length > 0) {
+          const bounds = new google.maps.LatLngBounds();
+          zonasFormatadas.forEach(zona => {
+            zona.pontos.forEach(point => {
+              bounds.extend(new google.maps.LatLng(point.lat, point.lng));
+            });
           });
+          
+          const center = {
+            lat: (bounds.getNorthEast().lat() + bounds.getSouthWest().lat()) / 2,
+            lng: (bounds.getNorthEast().lng() + bounds.getSouthWest().lng()) / 2
+          };
+          
+          setMapCenter(center);
+          setMapZoom(13);
         }
       }
     } catch (error) {
@@ -163,30 +310,98 @@ export default function ZonasPage() {
 
   const handleZonaClick = (zona, index) => {
     if (isDrawing) return;
-    setEditingZona({ ...zona, index });
+    
+    // Para o polling anterior
+    stopPolling();
+    
+    // Se já está editando uma zona, limpa os listeners dela
+    if (editingZona && polygonListeners[editingZona.id]) {
+      polygonListeners[editingZona.id].forEach(listener => {
+        google.maps.event.removeListener(listener);
+      });
+      setPolygonListeners(prev => {
+        const newListeners = { ...prev };
+        delete newListeners[editingZona.id];
+        return newListeners;
+      });
+    }
+    
+    // Reset das referências
+    activePolygonRef.current = null;
+    lastPointsHashRef.current = '';
+    
+    setEditingZona({
+      ...zona,
+      index
+    });
+    setHasChanges(false);
   };
 
-  const handleNewVertexDrag = (e, vertexIndex) => {
-    const newPoint = {
+  const handleVertexDrag = async (e, vertexIndex, zona) => {
+    if (!telefone) {
+      console.error('Telefone não disponível para salvamento');
+      return;
+    }
+
+    const newPoints = [...zona.pontos];
+    newPoints[vertexIndex] = {
       lat: e.latLng.lat(),
       lng: e.latLng.lng()
     };
-    
+
+    // Atualiza o estado local
+    setEditingZona(prev => ({
+      ...prev,
+      pontos: newPoints
+    }));
+
+    setZonas(prevZonas => 
+      prevZonas.map(z => 
+        z.id === zona.id 
+          ? { ...z, pontos: newPoints }
+          : z
+      )
+    );
+
+    try {
+      const { error } = await supabase
+        .from('zonas_entrega')
+        .update({
+          pontos: JSON.stringify(newPoints),
+          telefone: telefone
+        })
+        .eq('id', zona.id);
+
+      if (error) throw error;
+      
+      setHasChanges(true);
+    } catch (error) {
+      console.error('Erro ao salvar alteração dos pontos:', error);
+      toast({
+        title: "Erro ao salvar alteração",
+        description: "Não foi possível salvar a alteração dos pontos",
+        status: "error",
+        duration: 3000,
+        isClosable: true,
+      });
+    }
+  };
+
+  const handleNewVertexDrag = (e, vertexIndex) => {
+    const newPoints = [...currentZona.pontos];
+    newPoints[vertexIndex] = {
+      lat: e.latLng.lat(),
+      lng: e.latLng.lng()
+    };
+
     setCurrentZona(prev => ({
       ...prev,
-      pontos: prev.pontos.map((point, idx) => 
-        idx === vertexIndex ? newPoint : point
-      )
+      pontos: newPoints
     }));
   };
 
-  const handleRemoveVertex = (vertexIndex) => {
-    if (currentZona.pontos.length > 3) {
-      setCurrentZona(prev => ({
-        ...prev,
-        pontos: prev.pontos.filter((_, idx) => idx !== vertexIndex)
-      }));
-    } else {
+  const handleRemoveVertex = async (vertexIndex) => {
+    if (!editingZona || editingZona.pontos.length <= 3) {
       toast({
         title: "Não é possível remover",
         description: "Uma zona precisa ter no mínimo 3 pontos",
@@ -194,95 +409,252 @@ export default function ZonasPage() {
         duration: 3000,
         isClosable: true,
       });
+      return;
     }
+
+    if (!telefone) {
+      console.error('Telefone não disponível para salvamento');
+      toast({
+        title: "Erro",
+        description: "Telefone não disponível. Recarregue a página.",
+        status: "error",
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    const newPoints = editingZona.pontos.filter((_, idx) => idx !== vertexIndex);
+
+    // Atualiza o estado local
+    setEditingZona(prev => ({
+      ...prev,
+      pontos: newPoints
+    }));
+
+    setZonas(prevZonas => 
+      prevZonas.map(z => 
+        z.id === editingZona.id 
+          ? { ...z, pontos: newPoints }
+          : z
+      )
+    );
+
+    setHasChanges(true);
+
+    // Salva no Supabase
+    try {
+      const { error } = await supabase
+        .from('zonas_entrega')
+        .update({
+          pontos: JSON.stringify(newPoints),
+          telefone: telefone
+        })
+        .eq('id', editingZona.id);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Erro ao salvar alteração dos pontos:', error);
+      toast({
+        title: "Erro ao salvar alteração",
+        description: "Não foi possível salvar a alteração dos pontos",
+        status: "error",
+        duration: 3000,
+        isClosable: true,
+      });
+    }
+  };
+
+  const handleNomeChange = (e) => {
+    setEditingZona(prev => ({
+      ...prev,
+      nome: e.target.value
+    }));
+    setHasChanges(true);
   };
 
   const salvarEdicao = async () => {
     if (!editingZona) return;
 
-    try {
-      const { error } = await supabase
-        .from('zonas_entrega')
-        .update({
-          pontos: JSON.stringify(zonas[editingZona.index].pontos)
-        })
-        .eq('id', editingZona.id);
-
-      if (error) throw error;
-
+    if (!telefone) {
       toast({
-        title: 'Zona atualizada com sucesso!',
-        status: 'success',
+        title: "Erro",
+        description: "Telefone não disponível. Recarregue a página.",
+        status: "error",
         duration: 3000,
         isClosable: true,
       });
-
-      setEditingZona(null);
-      setSelectedVertex(null);
-    } catch (error) {
-      toast({
-        title: 'Erro ao atualizar zona',
-        description: error.message,
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
+      return;
     }
-  };
 
-  const salvarZona = async () => {
-    if (!currentZona.nome || currentZona.pontos.length < 3) {
+    if (!editingZona.nome || editingZona.nome.trim() === '') {
       toast({
-        title: 'Dados inválidos',
-        description: 'Preencha o nome e selecione pelo menos 3 pontos',
-        status: 'warning',
-        duration: 5000,
+        title: "Nome obrigatório",
+        description: "Por favor, dê um nome para a zona antes de salvar",
+        status: "warning",
+        duration: 3000,
         isClosable: true,
       });
       return;
     }
 
     try {
-      const { data, error } = await supabase
+      // Prepara os dados para salvar
+      const dadosParaSalvar = {
+        nome: editingZona.nome.trim(),
+        pontos: editingZona.pontos,
+        telefone: telefone // Usa o telefone da URL
+      };
+
+      console.log('Salvando zona:', dadosParaSalvar);
+
+      const { error } = await supabase
         .from('zonas_entrega')
-        .insert([{
-          nome: currentZona.nome,
-          pontos: JSON.stringify(currentZona.pontos),
-          telefone: telefone
-        }])
-        .select();
+        .update({
+          nome: dadosParaSalvar.nome,
+          pontos: JSON.stringify(dadosParaSalvar.pontos),
+          telefone: dadosParaSalvar.telefone
+        })
+        .eq('id', editingZona.id);
+
+      if (error) throw error;
+
+      // Atualiza a zona no estado local
+      const newZonas = zonas.map(zona => 
+        zona.id === editingZona.id 
+          ? { ...zona, nome: dadosParaSalvar.nome, pontos: dadosParaSalvar.pontos }
+          : zona
+      );
+      setZonas(newZonas);
+
+      toast({
+        title: "Zona atualizada",
+        description: "As alterações foram salvas com sucesso",
+        status: "success",
+        duration: 3000,
+        isClosable: true,
+      });
+
+      // Limpa o estado de edição
+      setEditingZona(null);
+      setCurrentZona({ nome: '', pontos: [] });
+      setHasChanges(false);
+    } catch (error) {
+      console.error('Erro ao salvar edição:', error);
+      toast({
+        title: "Erro ao salvar",
+        description: error.message,
+        status: "error",
+        duration: 3000,
+        isClosable: true,
+      });
+    }
+  };
+
+  const cancelarEdicao = () => {
+    stopPolling();
+    
+    // Limpa listeners da zona que estava sendo editada
+    if (editingZona && polygonListeners[editingZona.id]) {
+      polygonListeners[editingZona.id].forEach(listener => {
+        google.maps.event.removeListener(listener);
+      });
+      setPolygonListeners(prev => {
+        const newListeners = { ...prev };
+        delete newListeners[editingZona.id];
+        return newListeners;
+      });
+    }
+
+    activePolygonRef.current = null;
+    lastPointsHashRef.current = '';
+    setEditingZona(null);
+    setCurrentZona({ nome: '', pontos: [] });
+    setHasChanges(false);
+    carregarZonas();
+  };
+
+  const salvarZona = async () => {
+    if (!telefone) {
+      toast({
+        title: "Erro",
+        description: "Telefone não disponível. Recarregue a página.",
+        status: "error",
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    if (!currentZona.nome || currentZona.nome.trim() === '') {
+      toast({
+        title: "Nome obrigatório",
+        description: "Por favor, dê um nome para a zona antes de salvar",
+        status: "warning",
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    if (currentZona.pontos.length < 3) {
+      toast({
+        title: "Pontos insuficientes",
+        description: "A zona precisa ter no mínimo 3 pontos",
+        status: "warning",
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    try {
+      console.log('Salvando nova zona com telefone:', telefone);
+      const { error } = await supabase
+        .from('zonas_entrega')
+        .insert([
+          {
+            telefone,
+            nome: currentZona.nome.trim(),
+            pontos: JSON.stringify(currentZona.pontos)
+          }
+        ]);
 
       if (error) throw error;
 
       toast({
-        title: 'Zona salva com sucesso!',
-        status: 'success',
+        title: "Zona salva",
+        description: "A nova zona foi salva com sucesso",
+        status: "success",
         duration: 3000,
         isClosable: true,
       });
 
       setCurrentZona({ nome: '', pontos: [] });
       setIsDrawing(false);
-      carregarZonas();
+      await carregarZonas();
     } catch (error) {
+      console.error('Erro ao salvar zona:', error);
       toast({
-        title: 'Erro ao salvar zona',
+        title: "Erro ao salvar",
         description: error.message,
-        status: 'error',
-        duration: 5000,
+        status: "error",
+        duration: 3000,
         isClosable: true,
       });
     }
   };
 
   const calcularCentro = (pontos) => {
-    const lat = pontos.reduce((sum, point) => sum + point.lat, 0) / pontos.length;
-    const lng = pontos.reduce((sum, point) => sum + point.lng, 0) / pontos.length;
+    const lat = pontos.reduce((sum, p) => sum + p.lat, 0) / pontos.length;
+    const lng = pontos.reduce((sum, p) => sum + p.lng, 0) / pontos.length;
     return { lat, lng };
   };
 
   const excluirZona = async () => {
     if (!editingZona) return;
+
+    onClose(); // Fecha o dialog de confirmação
 
     try {
       const { error } = await supabase
@@ -292,252 +664,319 @@ export default function ZonasPage() {
 
       if (error) throw error;
 
+      // Remove a zona do estado local imediatamente
+      const newZonas = zonas.filter(zona => zona.id !== editingZona.id);
+      setZonas(newZonas);
+
+      // Para o polling se estiver ativo
+      stopPolling();
+
+      // Limpa o estado de edição
+      setEditingZona(null);
+      setCurrentZona({ nome: '', pontos: [] });
+      setHasChanges(false);
+
+      // Atualiza o zoom do mapa para mostrar todas as zonas restantes
+      if (mapInstance && newZonas.length > 0) {
+        const bounds = new google.maps.LatLngBounds();
+        newZonas.forEach(zona => {
+          zona.pontos.forEach(point => {
+            bounds.extend(new google.maps.LatLng(point.lat, point.lng));
+          });
+        });
+        mapInstance.fitBounds(bounds);
+
+        // Ajusta o zoom máximo
+        setTimeout(() => {
+          if (mapInstance.getZoom() > 15) {
+            mapInstance.setZoom(15);
+          }
+        }, 100);
+      } else if (mapInstance) {
+        // Se não houver mais zonas, volta para a visualização padrão
+        mapInstance.setCenter(defaultCenter);
+        mapInstance.setZoom(defaultZoom);
+      }
+
       toast({
-        title: 'Zona excluída com sucesso!',
-        status: 'success',
+        title: "Zona excluída",
+        description: "A zona foi excluída com sucesso",
+        status: "success",
         duration: 3000,
         isClosable: true,
       });
-
-      setEditingZona(null);
-      setSelectedVertex(null);
-      carregarZonas();
     } catch (error) {
+      console.error('Erro ao excluir zona:', error);
       toast({
-        title: 'Erro ao excluir zona',
+        title: "Erro ao excluir",
         description: error.message,
-        status: 'error',
-        duration: 5000,
+        status: "error",
+        duration: 3000,
         isClosable: true,
       });
     }
-  };
-
-  const hasZonaChanged = () => {
-    if (!editingZona) return false;
-    const currentPoints = JSON.stringify(zonas[editingZona.index].pontos);
-    return currentPoints !== editingZona.originalPoints;
   };
 
   const handleMapLoad = (map) => {
     setMapInstance(map);
+  };
+
+  const limparDesenho = () => {
+    setCurrentZona({ nome: '', pontos: [] });
+    toast({
+      title: "Desenho limpo",
+      description: "O desenho atual foi limpo",
+      status: "info",
+      duration: 2000,
+      isClosable: true,
+    });
+  };
+
+  const handleVertexMouseDown = (vertexIndex) => {
+    // Inicia o temporizador de clique longo (500ms)
+    const timer = setTimeout(() => {
+      setIsLongPress(true);
+      handleRemoveVertex(vertexIndex);
+    }, 500);
     
-    // Se já temos zonas carregadas, ajusta o mapa para elas
-    if (zonas.length > 0) {
-      const bounds = new google.maps.LatLngBounds();
-      zonas.forEach(zona => {
-        zona.pontos.forEach(point => {
-          bounds.extend(new google.maps.LatLng(point.lat, point.lng));
-        });
-      });
+    setLongPressTimer(timer);
+  };
 
-      // Expande os limites em 10% para melhor visualização
-      const ne = bounds.getNorthEast();
-      const sw = bounds.getSouthWest();
-      const latSpan = ne.lat() - sw.lat();
-      const lngSpan = ne.lng() - sw.lng();
-      
-      bounds.extend(new google.maps.LatLng(
-        sw.lat() - latSpan * 0.1,
-        sw.lng() - lngSpan * 0.1
-      ));
-      bounds.extend(new google.maps.LatLng(
-        ne.lat() + latSpan * 0.1,
-        ne.lng() + lngSpan * 0.1
-      ));
+  const handleVertexMouseUp = () => {
+    // Limpa o temporizador se o mouse for solto antes do tempo
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      setLongPressTimer(null);
+    }
+    setIsLongPress(false);
+  };
 
-      map.fitBounds(bounds);
-      
-      // Limita o zoom máximo para não aproximar demais
-      const listener = map.addListener('idle', () => {
-        if (map.getZoom() > 15) {
-          map.setZoom(15);
-        }
-        google.maps.event.removeListener(listener);
-      });
-    } else {
-      // Se não há zonas, mostra o Brasil inteiro
-      map.fitBounds(new google.maps.LatLngBounds(
-        new google.maps.LatLng(BRASIL_BOUNDS.south, BRASIL_BOUNDS.west),
-        new google.maps.LatLng(BRASIL_BOUNDS.north, BRASIL_BOUNDS.east)
-      ));
+  const handleVertexClick = (e, vertexIndex) => {
+    // Previne a remoção do vértice no clique normal se foi um clique longo
+    if (!isLongPress) {
+      e.stopPropagation();
     }
   };
 
-  return (
-    <Box p={[2, 4]} maxWidth="100vw" height="100vh" bg={bgColor} transition="background-color 0.2s">
-      <Container maxW="container.xl" h="100%">
-        <VStack spacing={[3, 6]} h="100%">
-          <Flex
-            direction="column"
-            align="center"
-            w="100%"
-            position="relative"
-            pt={2}
-          >
-            <IconButton
-              aria-label="Alternar tema"
-              icon={<span>{colorMode === 'dark' ? '☀️' : '🌙'}</span>}
-              position={["static", "absolute"]}
-              right="0"
-              top="0"
-              onClick={toggleColorMode}
-              variant="ghost"
-              size={["md", "lg"]}
-              mb={[2, 0]}
-            />
-            <Heading
-              fontSize={["2xl", "3xl"]}
-              bgGradient={colorMode === 'dark' 
-                ? "linear(to-r, blue.400, teal.400)"
-                : "linear(to-r, blue.500, teal.500)"}
-              bgClip="text"
-              letterSpacing="tight"
-              mb={2}
-            >
-              MDelivery
-            </Heading>
-            <Text
-              fontSize={["md", "lg"]}
-              color={subtitleColor}
-              fontWeight="medium"
-              textAlign="center"
-            >
-              Gerenciando Zonas de Entrega
-            </Text>
-          </Flex>
+  const setupPolygonListeners = useCallback((polygon, zona) => {
+    if (!telefone) {
+      console.error('Telefone não disponível para configurar listeners');
+      return;
+    }
 
-          <Box 
-            p={[3, 6]}
+    // Remove listeners anteriores
+    if (polygonListeners[zona.id]) {
+      polygonListeners[zona.id].forEach(listener => {
+        google.maps.event.removeListener(listener);
+      });
+    }
+
+    activePolygonRef.current = polygon;
+    console.log('🔧 Configurando listeners para zona:', zona.id);
+
+    // Inicia o polling para esta zona
+    startPolling(polygon, zona.id);
+
+    const listeners = [];
+
+    // Listener básico para detectar quando o usuário começa a editar
+    const mouseDownListener = google.maps.event.addListener(polygon, 'mousedown', () => {
+      console.log('🖱️ Mouse down no polígono - usuário começou a editar');
+    });
+
+    listeners.push(mouseDownListener);
+
+    setPolygonListeners(prev => ({
+      ...prev,
+      [zona.id]: listeners
+    }));
+
+    console.log('✅ Sistema de detecção configurado para zona', zona.id);
+  }, [telefone, startPolling]);
+
+  return (
+    <Box p={4} bg={bgColor} minH="100vh">
+      <Container maxW="container.xl">
+        <VStack spacing={6} align="stretch">
+          {/* Cabeçalho com logomarca e instruções */}
+          <Box
             bg={cardBg}
+            p={6}
             borderRadius="xl"
-            boxShadow="sm"
-            w="100%"
-            borderWidth={1}
-            borderColor={editingZona ? highlightBorderColor : borderColor}
+            borderWidth="1px"
+            borderColor={borderColor}
+            shadow="lg"
+            bgGradient="linear(to-r, blue.50, purple.50)"
+            _dark={{
+              bgGradient: "linear(to-r, blue.900, purple.900)"
+            }}
           >
-            {editingZona ? (
-              <VStack spacing={4} align="stretch">
-                <Stack
-                  direction={["column", "row"]}
-                  justify="space-between"
-                  align={["stretch", "center"]}
+            <VStack spacing={4} align="center">
+              {/* Logomarca MDelivery */}
+              <Heading
+                size="3xl"
+                fontWeight="extrabold"
+                fontFamily="Inter, system-ui, sans-serif"
+                bgGradient="linear(to-r, orange.400, red.500, pink.600)"
+                bgClip="text"
+                letterSpacing="tighter"
+                textAlign="center"
+                textShadow="0 2px 4px rgba(0,0,0,0.1)"
+              >
+                MDelivery
+              </Heading>
+              
+              {/* Subtítulo */}
+              <Text
+                fontSize="lg"
+                color={subtitleColor}
+                fontWeight="medium"
+                textAlign="center"
+                fontFamily="Inter, system-ui, sans-serif"
+              >
+                Gerenciando zonas de entregas
+              </Text>
+              
+              {/* Instruções de uso */}
+              <Box
+                bg={bgColor}
+                p={3}
+                borderRadius="lg"
+                borderWidth="1px"
+                borderColor={borderColor}
+                w="100%"
+                maxW="500px"
+              >
+                <Text
+                  fontSize="sm"
+                  color={textColor}
+                  textAlign="center"
+                  lineHeight="1.5"
+                  fontFamily="Inter, system-ui, sans-serif"
                 >
-                  <Text
-                    fontSize={["md", "lg"]}
-                    color={textColor}
-                    fontWeight="semibold"
-                  >
-                    ✏️ Editando: {editingZona.nome}
-                  </Text>
-                  <Button
-                    size={["sm", "md"]}
-                    variant="ghost"
-                    onClick={() => {
-                      setEditingZona(null);
-                      setSelectedVertex(null);
-                      carregarZonas();
-                    }}
-                  >
-                    Cancelar Edição
-                  </Button>
-                </Stack>
-                
-                <Text fontSize="sm" textAlign="center" color={subtitleColor}>
-                  Arraste os pontos vermelhos para ajustar a forma da zona
+                  Clique em "Desenhar Zona" para criar uma área. Para editar, 
+                  clique na zona e arraste os pontos vermelhos ou arestas.
                 </Text>
-                
-                <Divider />
-                
-                <Stack
-                  direction={["column", "row"]}
-                  spacing={4}
-                  justify="flex-end"
-                >
-                  <Button
-                    colorScheme="red"
-                    variant="ghost"
-                    onClick={excluirZona}
-                    leftIcon={<span>🗑️</span>}
-                    w={["100%", "auto"]}
-                  >
-                    Excluir
-                  </Button>
-                  <Button
-                    colorScheme="blue"
-                    onClick={salvarEdicao}
-                    isDisabled={!hasZonaChanged()}
-                    leftIcon={<span>💾</span>}
-                    w={["100%", "auto"]}
-                  >
-                    Salvar Alterações
-                  </Button>
-                </Stack>
-              </VStack>
-            ) : (
-              <VStack spacing={4} align="stretch">
-                <Input
-                  placeholder="Nome da nova zona"
-                  value={currentZona.nome}
-                  onChange={(e) => setCurrentZona(prev => ({ ...prev, nome: e.target.value }))}
-                  size={["md", "lg"]}
-                  bg={inputBg}
-                  borderColor={borderColor}
-                  _focus={{ borderColor: "blue.400", boxShadow: "none" }}
-                />
-                
-                <Text fontSize="sm" textAlign="center" color={subtitleColor}>
-                  {isDrawing 
-                    ? "🎯 Clique no mapa para adicionar pontos (mínimo 3 pontos)"
-                    : "Clique em uma zona existente para editar ou inicie o desenho de uma nova zona"}
-                </Text>
-                
-                <Stack
-                  direction={["column", "row"]}
-                  spacing={4}
-                  justify="flex-end"
-                >
-                  <Button
-                    colorScheme={isDrawing ? "red" : "blue"}
-                    variant={isDrawing ? "solid" : "outline"}
-                    onClick={() => setIsDrawing(!isDrawing)}
-                    leftIcon={<span>{isDrawing ? '⏹️' : '✏️'}</span>}
-                    w={["100%", "auto"]}
-                  >
-                    {isDrawing ? 'Parar Desenho' : 'Iniciar Desenho'}
-                  </Button>
-                  <Button
-                    colorScheme="blue"
-                    onClick={salvarZona}
-                    isDisabled={!currentZona.nome || currentZona.pontos.length < 3}
-                    leftIcon={<span>💾</span>}
-                    w={["100%", "auto"]}
-                  >
-                    Salvar Nova Zona
-                  </Button>
-                </Stack>
-              </VStack>
-            )}
+              </Box>
+            </VStack>
           </Box>
 
-          <Box 
-            flex={1}
-            w="100%"
-            borderRadius="xl"
+          {/* Controles de zona */}
+          <Box
+            bg={cardBg}
+            p={6}
+            borderRadius="lg"
+            borderWidth="1px"
+            borderColor={borderColor}
+            shadow="sm"
+          >
+            <VStack spacing={4} align="stretch">
+              {!editingZona && (
+                <VStack spacing={4} align="stretch">
+                  <Input
+                    placeholder="Nome da zona (obrigatório)"
+                    value={currentZona.nome}
+                    onChange={(e) => setCurrentZona(prev => ({ ...prev, nome: e.target.value }))}
+                    bg={inputBg}
+                    isDisabled={editingZona !== null}
+                  />
+                  <HStack spacing={2}>
+                    {!isDrawing ? (
+                      <Button
+                        colorScheme="green"
+                        onClick={() => setIsDrawing(true)}
+                        leftIcon={<span>✏️</span>}
+                        w={["100%", "auto"]}
+                      >
+                        Desenhar Zona
+                      </Button>
+                    ) : (
+                      <>
+                        <Button
+                          colorScheme="red"
+                          onClick={() => setIsDrawing(false)}
+                          leftIcon={<span>⏹️</span>}
+                          w={["100%", "auto"]}
+                        >
+                          Parar Desenho
+                        </Button>
+                        <Button
+                          colorScheme="orange"
+                          onClick={limparDesenho}
+                          leftIcon={<span>🗑️</span>}
+                          w={["100%", "auto"]}
+                          isDisabled={currentZona.pontos.length === 0}
+                        >
+                          Limpar Desenho
+                        </Button>
+                      </>
+                    )}
+                    {currentZona.pontos.length >= 3 && !editingZona && (
+                      <Button
+                        colorScheme="blue"
+                        onClick={salvarZona}
+                        leftIcon={<span>💾</span>}
+                        w={["100%", "auto"]}
+                        isDisabled={!currentZona.nome || currentZona.nome.trim() === ''}
+                      >
+                        Salvar Zona
+                      </Button>
+                    )}
+                  </HStack>
+                </VStack>
+              )}
+
+              {editingZona && (
+                <VStack spacing={4} align="stretch" mb={4}>
+                  <Input
+                    placeholder="Nome da zona (obrigatório)"
+                    value={editingZona.nome || ''}
+                    onChange={handleNomeChange}
+                    bg={inputBg}
+                  />
+                  <HStack spacing={2} justify="flex-end">
+                    <Button
+                      colorScheme="blue"
+                      onClick={salvarEdicao}
+                      isDisabled={!hasChanges || !editingZona.nome || editingZona.nome.trim() === ''}
+                      leftIcon={<span>💾</span>}
+                    >
+                      Salvar Alterações
+                    </Button>
+                    <Button
+                      onClick={cancelarEdicao}
+                      leftIcon={<span>❌</span>}
+                    >
+                      Cancelar
+                    </Button>
+                    <Button
+                      colorScheme="red"
+                      onClick={onOpen}
+                      leftIcon={<span>🗑️</span>}
+                    >
+                      Excluir
+                    </Button>
+                  </HStack>
+                </VStack>
+              )}
+            </VStack>
+          </Box>
+
+          <Box
+            bg={cardBg}
+            borderRadius="lg"
+            borderWidth="1px"
+            borderColor={borderColor}
+            shadow="sm"
+            h="600px"
+            position="relative"
             overflow="hidden"
-            cursor={isDrawing ? 'crosshair' : editingZona ? 'move' : 'default'}
-            boxShadow="sm"
-            borderWidth={1}
-            borderColor={editingZona ? highlightBorderColor : borderColor}
-            minH={["300px", "400px"]}
           >
             <LoadScript googleMapsApiKey={GOOGLE_MAPS_KEY}>
               <GoogleMap
                 mapContainerStyle={{ width: '100%', height: '100%' }}
-                center={mapConfig.center}
-                zoom={mapConfig.zoom}
-                onClick={handleMapClick}
-                onLoad={handleMapLoad}
+                center={mapCenter}
+                zoom={mapZoom}
                 options={{
                   mapTypeId: 'hybrid',
                   styles: [
@@ -558,41 +997,74 @@ export default function ZonasPage() {
                     strictBounds: false
                   }
                 }}
+                onClick={handleMapClick}
+                onLoad={handleMapLoad}
               >
                 {zonas.map((zona, index) => (
                   <div key={zona.id}>
-                    <Polygon
-                      paths={zona.pontos}
-                      options={{
-                        fillColor: colors[index % colors.length],
-                        fillOpacity: editingZona?.id === zona.id ? 0.4 : 0.2,
-                        strokeColor: colors[index % colors.length],
-                        strokeWeight: editingZona?.id === zona.id ? 2.5 : 1.5,
-                        clickable: !isDrawing,
-                        draggable: false
-                      }}
-                      onClick={() => handleZonaClick(zona, index)}
-                    />
-                    {editingZona?.id === zona.id && zona.pontos.map((point, vertexIndex) => (
-                      <Marker
-                        key={`vertex-${vertexIndex}`}
-                        position={point}
-                        draggable={true}
-                        icon={{
-                          path: google.maps.SymbolPath.CIRCLE,
-                          scale: 6,
-                          fillColor: '#FF0000',
-                          fillOpacity: 1,
-                          strokeWeight: 2,
-                          strokeColor: '#FFFFFF'
+                    {(!editingZona || editingZona.id !== zona.id) && (
+                      <Polygon
+                        paths={zona.pontos}
+                        options={{
+                          fillColor: colors[index % colors.length],
+                          fillOpacity: 0.2,
+                          strokeColor: colors[index % colors.length],
+                          strokeWeight: 1.5,
+                          clickable: !isDrawing,
+                          draggable: false,
+                          editable: false,
+                          geodesic: true
                         }}
-                        onDragEnd={(e) => handleNewVertexDrag(e, vertexIndex)}
+                        onClick={() => handleZonaClick(zona, index)}
                       />
-                    ))}
+                    )}
+                    {editingZona?.id === zona.id && (
+                      <>
+                        <Polygon
+                          paths={editingZona.pontos}
+                          options={{
+                            fillColor: colors[index % colors.length],
+                            fillOpacity: 0.3,
+                            strokeColor: '#FF0000',
+                            strokeWeight: 2.5,
+                            strokeOpacity: 1,
+                            clickable: true,
+                            draggable: false,
+                            editable: true,
+                            geodesic: true,
+                            polylineOptions: {
+                              strokeColor: '#FF0000',
+                              strokeWeight: 2.5,
+                              strokeOpacity: 1
+                            }
+                          }}
+                          onLoad={(polygon) => setupPolygonListeners(polygon, zona)}
+                        />
+                        {editingZona.pontos.map((point, vertexIndex) => (
+                          <Marker
+                            key={`vertex-${vertexIndex}-${point.lat}-${point.lng}`}
+                            position={point}
+                            draggable={true}
+                            icon={{
+                              path: google.maps.SymbolPath.CIRCLE,
+                              scale: 6,
+                              fillColor: '#FF0000',
+                              fillOpacity: 1,
+                              strokeWeight: 2,
+                              strokeColor: '#FFFFFF'
+                            }}
+                            onDragEnd={(e) => handleVertexDrag(e, vertexIndex, zona)}
+                            onMouseDown={() => handleVertexMouseDown(vertexIndex)}
+                            onMouseUp={handleVertexMouseUp}
+                            onMouseLeave={handleVertexMouseUp}
+                          />
+                        ))}
+                      </>
+                    )}
                     <Marker
                       position={calcularCentro(zona.pontos)}
                       label={{
-                        text: zona.nome,
+                        text: zona.nome || '',
                         color: 'white',
                         fontSize: '12px',
                         fontWeight: 'bold'
@@ -646,6 +1118,35 @@ export default function ZonasPage() {
           </Box>
         </VStack>
       </Container>
+
+      {/* Dialog de Confirmação de Exclusão */}
+      <AlertDialog
+        isOpen={isOpen}
+        leastDestructiveRef={cancelRef}
+        onClose={onClose}
+      >
+        <AlertDialogOverlay>
+          <AlertDialogContent>
+            <AlertDialogHeader fontSize="lg" fontWeight="bold">
+              Confirmar Exclusão
+            </AlertDialogHeader>
+
+            <AlertDialogBody>
+              Tem certeza que deseja excluir a zona "{editingZona?.nome}"? 
+              Esta ação não pode ser desfeita.
+            </AlertDialogBody>
+
+            <AlertDialogFooter>
+              <Button ref={cancelRef} onClick={onClose}>
+                Cancelar
+              </Button>
+              <Button colorScheme="red" onClick={excluirZona} ml={3}>
+                Excluir
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialogOverlay>
+      </AlertDialog>
     </Box>
   );
 } 
