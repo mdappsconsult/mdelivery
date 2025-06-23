@@ -903,14 +903,26 @@ export default function ZonasPage() {
             <VStack spacing={[3, 4]} align="stretch">
               {!editingZona && (
                 <VStack spacing={[3, 4]} align="stretch">
-                  <Input
-                    placeholder="Nome da zona (obrigatório)"
-                    value={currentZona.nome}
-                    onChange={(e) => setCurrentZona(prev => ({ ...prev, nome: e.target.value }))}
-                    bg={inputBg}
-                    isDisabled={editingZona !== null}
-                    size={["md", "md"]}
-                  />
+                  <HStack spacing={2}>
+                    <Input
+                      placeholder="Nome da zona (obrigatório)"
+                      value={currentZona.nome}
+                      onChange={(e) => setCurrentZona(prev => ({ ...prev, nome: e.target.value }))}
+                      bg={inputBg}
+                      isDisabled={editingZona !== null}
+                      size={["md", "md"]}
+                      flex="1"
+                    />
+                    <IconButton
+                      icon={<MdClear />}
+                      onClick={() => setCurrentZona(prev => ({ ...prev, nome: '' }))}
+                      isDisabled={editingZona !== null}
+                      size="md"
+                      variant="ghost"
+                      colorScheme="gray"
+                      aria-label="Limpar nome"
+                    />
+                  </HStack>
                   
                   {!isDrawing ? (
                     <Button
@@ -973,16 +985,27 @@ export default function ZonasPage() {
 
               {editingZona && (
                 <VStack spacing={[4, 4]} align="stretch">
-                  <Input
-                    placeholder="Nome da zona (obrigatório)"
-                    value={editingZona.nome || ''}
-                    onChange={handleNomeChange}
-                    bg={inputBg}
-                    size={["md", "md"]}
-                  />
+                  <HStack spacing={2}>
+                    <Input
+                      placeholder="Nome da zona (obrigatório)"
+                      value={editingZona.nome || ''}
+                      onChange={handleNomeChange}
+                      bg={inputBg}
+                      size={["md", "md"]}
+                      flex="1"
+                    />
+                    <IconButton
+                      icon={<MdClear />}
+                      onClick={() => setEditingZona(prev => ({ ...prev, nome: '' }))}
+                      size="md"
+                      variant="ghost"
+                      colorScheme="gray"
+                      aria-label="Limpar nome"
+                    />
+                  </HStack>
                   
-                  <VStack spacing={3} align="stretch">
-                    <Button
+                                      <VStack spacing={3} align="stretch">
+                                          <Button
                       colorScheme="blue"
                       onClick={salvarEdicao}
                       isDisabled={!hasChanges || !editingZona.nome || editingZona.nome.trim() === ''}
@@ -996,29 +1019,42 @@ export default function ZonasPage() {
                       Salvar Alterações
                     </Button>
                     
-                    <Grid templateColumns={["1fr 1fr", "1fr 1fr"]} gap={3}>
-                      <Button
-                        onClick={cancelarEdicao}
-                        size="lg"
-                        h={["12", "10"]}
-                        leftIcon={<MdCancel />}
-                        fontSize={["sm", "md"]}
-                        variant="outline"
-                      >
-                        Cancelar
-                      </Button>
-                      <Button
-                        colorScheme="red"
-                        onClick={onOpen}
-                        size="lg"
-                        h={["12", "10"]}
-                        leftIcon={<MdDelete />}
-                        fontSize={["sm", "md"]}
-                      >
-                        Excluir
-                      </Button>
-                    </Grid>
-                  </VStack>
+                    <Button
+                      colorScheme="purple"
+                      onClick={() => router.push(`/zonas/editar-raios/${telefone}?zonaId=${editingZona.id}&zonaNome=${encodeURIComponent(editingZona.nome)}`)}
+                      size="lg"
+                      w="100%"
+                      h={["12", "10"]}
+                      leftIcon={<MdEdit />}
+                      fontSize={["md", "md"]}
+                      fontWeight="bold"
+                    >
+                      Editar Raios de Entrega
+                    </Button>
+                      
+                      <Grid templateColumns={["1fr 1fr", "1fr 1fr"]} gap={3}>
+                        <Button
+                          onClick={cancelarEdicao}
+                          size="lg"
+                          h={["12", "10"]}
+                          leftIcon={<MdCancel />}
+                          fontSize={["sm", "md"]}
+                          variant="outline"
+                        >
+                          Cancelar
+                        </Button>
+                        <Button
+                          colorScheme="red"
+                          onClick={onOpen}
+                          size="lg"
+                          h={["12", "10"]}
+                          leftIcon={<MdDelete />}
+                          fontSize={["sm", "md"]}
+                        >
+                          Excluir
+                        </Button>
+                      </Grid>
+                    </VStack>
                 </VStack>
               )}
             </VStack>
